@@ -3,12 +3,12 @@ import { useQuery } from '@tanstack/react-query';
 import { reportsApi } from '../lib/api';
 import { useTenant } from '../components/TenantProvider';
 
-function StatCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
+function StatCard({ label, value, sub, accent }: { label: string; value: string; sub?: string; accent?: string }) {
   return (
-    <div className="card p-6">
-      <p className="text-sm text-gray-500">{label}</p>
-      <p className="text-3xl font-bold text-gray-900 mt-1">{value}</p>
-      {sub && <p className="text-xs text-gray-400 mt-1">{sub}</p>}
+    <div className="stat-card">
+      <p className="stat-label">{label}</p>
+      <p className={`stat-value ${accent ?? ''}`}>{value}</p>
+      {sub && <p className="text-xs text-slate-400 mt-1">{sub}</p>}
     </div>
   );
 }
@@ -44,43 +44,43 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="p-8">
+    <div className="page-shell">
       <div className="mb-8">
-        <h1 className="text-2xl font-bold text-gray-900">Accounts Receivable Dashboard</h1>
-        <p className="text-gray-500 mt-1">Real-time AR overview with GL reconciliation</p>
+        <h1 className="page-title">Accounts Receivable Dashboard</h1>
+        <p className="page-subtitle">Real-time AR overview with GL reconciliation</p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mb-8">
         <StatCard
           label="Total Billed (Open)"
           value={fmt(summary?.totalBilled)}
           sub={`${summary?.invoiceCount ?? 0} open invoices`}
         />
-        <StatCard label="Total Collected" value={fmt(summary?.totalPaid)} />
-        <StatCard label="Outstanding AR" value={fmt(summary?.totalOutstanding)} />
+        <StatCard label="Total Collected" value={fmt(summary?.totalPaid)} accent="text-emerald-600" />
+        <StatCard label="Outstanding AR" value={fmt(summary?.totalOutstanding)} accent="text-brand-700" />
       </div>
 
       {recon && (
         <div className="card p-6">
-          <h2 className="text-base font-semibold text-gray-900 mb-4">GL Reconciliation</h2>
-          <p className="text-xs text-gray-400 mb-4">
-            AR Subledger must equal the GL Accounts Receivable balance. A non-zero variance indicates a posting error.
+          <h2 className="text-base font-semibold text-slate-900 mb-1">GL Reconciliation</h2>
+          <p className="text-xs text-slate-400 mb-5">
+            AR subledger must equal the GL Accounts Receivable balance.
           </p>
-          <div className="grid grid-cols-3 gap-4 text-sm">
-            <div>
-              <p className="text-gray-500">AR Subledger</p>
-              <p className="font-mono text-lg">{fmt(recon.arSubledgerBalance)}</p>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-sm">
+            <div className="stat-card !p-4">
+              <p className="stat-label">AR Subledger</p>
+              <p className="font-mono text-xl font-semibold mt-1">{fmt(recon.arSubledgerBalance)}</p>
             </div>
-            <div>
-              <p className="text-gray-500">GL AR Account</p>
-              <p className="font-mono text-lg">{fmt(recon.glArBalance)}</p>
+            <div className="stat-card !p-4">
+              <p className="stat-label">GL AR Account</p>
+              <p className="font-mono text-xl font-semibold mt-1">{fmt(recon.glArBalance)}</p>
             </div>
-            <div>
-              <p className="text-gray-500">Variance</p>
-              <p className={`font-mono text-lg font-semibold ${recon.isReconciled ? 'text-green-600' : 'text-red-600'}`}>
+            <div className={`stat-card !p-4 ${recon.isReconciled ? 'ring-2 ring-emerald-200' : 'ring-2 ring-red-200'}`}>
+              <p className="stat-label">Variance</p>
+              <p className={`font-mono text-xl font-bold mt-1 ${recon.isReconciled ? 'text-emerald-600' : 'text-red-600'}`}>
                 {fmt(recon.variance)}
-                <span className="ml-1 text-sm">{recon.isReconciled ? '✓ Reconciled' : '⚠ Out of Balance'}</span>
               </p>
+              <p className="text-xs mt-1 font-medium">{recon.isReconciled ? '✓ Reconciled' : '⚠ Out of Balance'}</p>
             </div>
           </div>
         </div>

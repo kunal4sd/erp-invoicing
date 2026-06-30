@@ -66,6 +66,7 @@ export default function NewInvoicePage() {
       dueDate,
       currency,
       notes,
+      idempotencyKey: crypto.randomUUID(),
       lineItems: lines.map((l) => ({
         description: l.description,
         quantity: parseFloat(l.quantity),

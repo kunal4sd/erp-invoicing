@@ -1,20 +1,20 @@
 import axios from 'axios';
+import { getStoredToken } from './auth';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 
 export const api = axios.create({
   baseURL: `${API_BASE}/api`,
-  headers: {
-    'Content-Type': 'application/json',
-    // Defaults — all overridable via setTenantId / setUserRole
-    'X-Tenant-ID': process.env.NEXT_PUBLIC_DEMO_TENANT_ID ?? '',
-    'X-User-ID': 'demo-user',
-    'X-User-Name': 'Demo User',
-    // Default to CONTROLLER so approve/void/write-off work in the demo UI.
-    // In production this header comes from a verified JWT in the auth layer.
-    'X-User-Role': 'CONTROLLER',
-  },
+  headers: { 'Content-Type': 'application/json' },
 });
+
+// Attach stored JWT on load (browser only)
+if (typeof window !== 'undefined') {
+  const token = getStoredToken();
+  if (token) {
+    api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+  }
+}
 
 api.interceptors.response.use(
   (r) => r,
@@ -25,12 +25,21 @@ api.interceptors.response.use(
   }
 );
 
+export function setAuthToken(token: string | null) {
+  if (token) {
+    api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+  } else {
+    delete api.defaults.headers.common['Authorization'];
+  }
+}
+
 export function setTenantId(id: string) {
   api.defaults.headers['X-Tenant-ID'] = id;
 }
 
-export function setUserRole(role: string) {
-  api.defaults.headers['X-User-Role'] = role;
+/** @deprecated JWT carries role — kept for type compatibility */
+export function setUserRole(_role: string) {
+  // no-op: role comes from verified JWT
 }
 
 // ─── Typed API helpers ────────────────────────────────────────────────────────
@@ -76,4 +85,9 @@ export const creditMemosApi = {
 
 export const tenantsApi = {
   list: () => axios.get(`${API_BASE}/api/tenants`),
+};
+
+export const authApi = {
+  demoLogin: (email: string, password: string) =>
+    axios.post(`${API_BASE}/api/auth/demo-login`, { email, password }),
 };
