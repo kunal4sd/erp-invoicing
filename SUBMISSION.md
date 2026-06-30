@@ -25,7 +25,7 @@
 
 ```bash
 # 1. Clone the repo
-git clone <repo-url>
+git clone https://github.com/kunal4sd/erp-invoicing.git
 cd erp-invoicing
 
 # 2. Build and start everything — one command, no other steps needed
@@ -37,11 +37,23 @@ docker compose up --build
 # 3. Open the app
 #    Frontend:  http://localhost:3000
 #    API health: http://localhost:3001/health
+
+# 4. Run smoke tests (optional — requires the stack to be running)
+bash scripts/verify.sh
+# Note: verify.sh uses X-Tenant-ID header auth (ALLOW_HEADER_AUTH=true). It does not exercise JWT login.
 ```
 
 > If you prefer to run in the background: `docker compose up --build -d` then `docker compose logs -f backend` to watch progress.
 
-The seed runs automatically on first startup — the frontend auto-detects the first tenant and is immediately usable with demo data.
+The seed runs automatically on first startup. Open http://localhost:3000 and sign in with one of the demo users (password: `demo`):
+
+| Email | Role |
+|-------|------|
+| `controller@demo.local` | CONTROLLER — full access |
+| `clerk@demo.local` | AR_CLERK — create/send invoices and record payments in UI |
+| `viewer@demo.local` | VIEWER — read-only |
+
+Click a quick-login card on the login page, or enter email + password manually.
 
 ### What you'll see when the app opens
 
@@ -60,9 +72,9 @@ The seed runs automatically on first startup — the frontend auto-detects the f
 
 Each approved+ invoice has balanced DR/CR journal entries. Payments have allocation records. AR aging and GL reconciliation reports reflect live balances.
 
-> **Multi-tenant demo:** The sidebar shows a tenant switcher when more than one tenant exists. Tenant B (Globex Inc.) is intentionally empty — switching to it demonstrates row-level isolation (no data leaks from Tenant A). All demo invoices and customers belong to Tenant A (Acme Corporation).
+> **Demo login:** Sign in at http://localhost:3000/login — password `demo` for all accounts. Use `controller@demo.local` for Approve/Void/Write-Off, `clerk@demo.local` to create invoices and record payments, or `viewer@demo.local` for read-only access.
 
-> **Role switcher:** The sidebar includes a role dropdown (CONTROLLER / AR_CLERK / VIEWER). CONTROLLER is required to Approve, Void, or Write-Off invoices. AR_CLERK can create invoices and record payments. VIEWER is read-only.
+> **Multi-tenant:** All seeded invoices and customers belong to Tenant A (Acme Corporation). Tenant B (Globex Inc.) is intentionally empty to demonstrate row-level isolation when queried with a different tenant ID.
 
 ---
 
@@ -85,20 +97,29 @@ Each approved+ invoice has balanced DR/CR journal entries. Payments have allocat
 | Full AR aging report (all customers) | `reports.controller.ts:arAgingAllHandler` |
 | GL journal entries query | `src/modules/gl/` |
 | AR subledger ↔ GL reconciliation | `reports.controller.ts:glReconciliationHandler` |
-| Role enforcement (CONTROLLER, AR_CLERK) | `src/middleware/requireRole.ts` |
-| Accounting period close enforcement | `invoice.service.ts:validatePeriodOpen` + `payment.service.ts` |
+| Role enforcement (CONTROLLER, AR_CLERK, VIEWER) | `src/middleware/requireRole.ts` — role from JWT when Bearer token present; otherwise `X-User-Role` header (defaults to VIEWER) |
 | Audit log (insert-only) | `src/middleware/audit.ts` + AuditLog table |
 | Multi-entity hierarchy (parent/subsidiary) | `Entity` model, scoped to all records |
 | Exchange rate table + invoice FX field | `ExchangeRate` model, `invoice.exchangeRate` |
 | Docker Compose (auto-migrate + auto-seed) | `docker-compose.yml` + `Dockerfile` |
-| Unit + integration tests (52 cases) | `src/__tests__/invoice.test.ts`, `src/__tests__/api.test.ts` |
-| Next.js dashboard (AR summary, aging, invoices, customers) | `frontend/src/app/` |
-| Auto-tenant detection in frontend | `TenantProvider.tsx` |
+| CI pipeline (GitHub Actions) | `.github/workflows/ci.yml` — runs `npm test` on every push/PR to main |
+| Unit + integration tests (63 cases) | `src/__tests__/invoice.test.ts`, `src/__tests__/api.test.ts` |
+| Next.js dashboard (AR summary, aging, invoices, customers, credit memos) | `frontend/src/app/` |
+| JWT login session (tenant + role from token) | `AuthProvider.tsx` + login page |
+
+### Partially Implemented
+
+| Feature | Where | Notes |
+|---------|-------|-------|
+| Accounting period close enforcement | `invoice.service.ts:validatePeriodOpen` | Enforcement is **fail-open**: posting is blocked only when an `AccountingPeriod` row exists and its `status` is `CLOSED` or `LOCKED`. If no row exists for the posting month, posting is allowed. Tenant A has 12 seeded periods (past months `CLOSED`, current/future `OPEN`). Tenant B has no periods by design (isolation demo tenant). A full implementation would auto-create OPEN periods on tenant setup or default-deny when no period row exists. |
+| Audit log integrity | `middleware/audit.ts` | When the UI uses JWT, `userId` and `userName` are taken from the signed token. With `ALLOW_HEADER_AUTH=true`, curl clients can still supply `X-User-ID` / `X-User-Name` (unverified). The audit write also happens **after** the main transaction commits, so a crash between commit and audit leaves no record. Production fix: write the audit row **inside** the same database transaction as the business change. |
+| Authentication | `middleware/auth.ts`, `modules/auth/` | Demo JWT via `POST /api/auth/demo-login` (3 seeded users, shared password). UI sends `Authorization: Bearer`. When `ALLOW_HEADER_AUTH=true` (default), curl examples with `X-User-Role` still work for reviewers. Production: password hashing, refresh tokens, session revocation, and `ALLOW_HEADER_AUTH=false`. |
 
 ### Designed, Not Fully Implemented in Prototype
 
 | Feature | Where Documented | Notes |
 |---------|-----------------|-------|
+| Unapplied cash GL entry | `payment.service.ts:recordPayment` | When a payment has allocations, the GL entry is posted for the allocated amount (DR Cash / CR AR). When `unappliedAmount > 0`, the unallocated cash is tracked on `Payment.unappliedAmount` but is not posted to a GL Unapplied Cash liability account. This would require a dedicated liability account per tenant which is not in the demo chart of accounts. The payment is visible on the Payment ledger and the `unappliedAmount` field is preserved for future allocation. |
 | FX gain/loss journal entries | `docs/design.md §7` | `ExchangeRate` table and `exchangeRate` fields are in place; the GL posting of realized FX gain/loss on payment is described but the differential journal entry is not wired |
 | Revenue recognition schedules | `docs/design.md §7` | Schema extension described; `RevenueSchedule` table and nightly recognition job not implemented |
 | Bulk invoice import / batch endpoints | `docs/design.md §4.5` | Architecture described; `/invoices/batch` and `/payments/import` not implemented |
@@ -119,7 +140,17 @@ Each approved+ invoice has balanced DR/CR journal entries. Payments have allocat
 | `GET /api/customers/:id/aging` | ✅ |
 | `GET /api/journal-entries?invoice=:id` | ✅ |
 
-Additional endpoints: `POST /invoices/:id/void`, `POST /invoices/:id/send`, `POST /invoices/:id/write-off`, `POST /credit-memos`, `POST /credit-memos/:id/apply`, `GET /reports/ar-aging`, `GET /reports/gl-reconciliation`, `GET /reports/ar-summary`, `POST /gl-accounts`, `GET /gl-accounts`, `POST /tenants`, `GET /customers`, `POST /customers`.
+Additional endpoints: `POST /invoices/:id/void`, `POST /invoices/:id/send`, `POST /invoices/:id/write-off`, `POST /credit-memos`, `POST /credit-memos/:id/apply`, `GET /reports/ar-aging`, `GET /reports/gl-reconciliation`, `GET /reports/ar-summary`, `POST /gl-accounts` (CONTROLLER), `GET /gl-accounts`, `POST /tenants` (**requires `X-Admin-Key`**), `GET /tenants`, `GET /customers`, `POST /customers` (AR_CLERK).
+
+### Prototype scope notes (intentional gaps)
+
+| Area | Status |
+|------|--------|
+| Payment recording | Invoice detail page — **Record Payment** form (AR_CLERK+) |
+| Credit memos | `/credit-memos` — list, create, and apply (CONTROLLER) |
+| `scripts/verify.sh` | Smoke tests via `X-Tenant-ID` header auth; does not exercise JWT login |
+| Postgres in Docker | Exposed on host port 5432 for local debugging (not production-hardened) |
+| AR aging-all report | Uses `findMany` (fine at demo scale; AR summary uses SQL `aggregate`) |
 
 ---
 
@@ -131,10 +162,10 @@ npm ci
 npm test
 ```
 
-Expected: **52 tests pass, 0 failures.**
+Expected: **63 tests pass, 0 failures.**
 
 - `invoice.test.ts` — 33 pure unit tests (state machine, FIFO arithmetic, GL balance, aging buckets). No database required.
-- `api.test.ts` — 19 integration tests against the full Express HTTP stack (tenant middleware, RBAC, invoice CRUD, payments, aging, journal entries). Prisma is mocked via `jest.mock`.
+- `api.test.ts` — 30 integration tests against the full Express HTTP stack (tenant middleware, RBAC, demo JWT login, invoice CRUD, payments, aging, journal entries, accounting guards, concurrent-approve race guard, write-off missing-AR guard, health check DB ping, admin-key guard, role guards on customers/GL accounts). Prisma is mocked via `jest.mock`.
 
 ---
 
@@ -148,8 +179,9 @@ Expected: **52 tests pass, 0 failures.**
 | Enterprise experience showcase | 25 min |
 | Frontend dashboard | 30 min |
 | Tests, migrations, Docker fixes | 45 min |
-| SUBMISSION.md + README | 15 min |
-| **Total** | **~5.5 hours** |
+| JWT login, security guards, CI polish | 60 min |
+| SUBMISSION.md + README | 25 min |
+| **Total** | **~6.5 hours** |
 
 ---
 

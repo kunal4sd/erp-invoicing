@@ -41,7 +41,7 @@ The only thing you need installed on your machine to run this project is **Docke
 ## Quick Start (Docker — one command)
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/kunal4sd/erp-invoicing.git
 cd erp-invoicing
 
 docker compose up --build
@@ -68,7 +68,102 @@ Services:
 - **Backend API:** http://localhost:3001
 - **Health check:** http://localhost:3001/health
 
-> **No manual steps needed.** Migrations and seed data run automatically on first start. The frontend auto-detects the tenant — no configuration required.
+> **No manual steps needed.** Migrations and seed data run automatically on first start. Open http://localhost:3000 and sign in with a demo user (see [Login](#login) below).
+
+---
+
+## Login
+
+After `docker compose up`, open http://localhost:3000. You will be redirected to the login page.
+
+**Password for all demo users:** `demo`
+
+| Email | Role | Capabilities |
+|-------|------|--------------|
+| `controller@demo.local` | CONTROLLER | Approve/void/write-off invoices, credit memos, full access |
+| `clerk@demo.local` | AR_CLERK | Create invoices, send, record payments (all in UI) |
+| `viewer@demo.local` | VIEWER | Read-only |
+
+The UI issues a JWT on login and sends `Authorization: Bearer <token>` on API calls. For curl/API testing without logging in, set `ALLOW_HEADER_AUTH=true` (default) and use `X-Tenant-ID` + `X-User-Role` headers as shown in the API examples below.
+
+### How to test with different users (UI walkthrough)
+
+Use this checklist to verify RBAC before submitting. **Password for every account: `demo`**
+
+**Start the stack** (if not already running):
+```bash
+docker compose up --build
+# wait for "✅ Seed complete!" in logs, then open http://localhost:3000
+```
+
+**Switch users anytime:** click **Sign out** in the sidebar (bottom-left) → you return to `/login`.
+
+---
+
+#### 1. VIEWER — read-only (`viewer@demo.local`)
+
+On the login page, click the **Viewer** quick-login card (or enter email + password manually).
+
+| Action | Expected result |
+|--------|-----------------|
+| Dashboard, Invoices, Customers, AR Aging | ✅ Loads seeded data |
+| Invoices → **+ New Invoice** button | ❌ Hidden — shows "Read-only (VIEWER)" |
+| Open **INV-000006** (DRAFT) → **Approve** button | ❌ Disabled — "CONTROLLER only" |
+| Sidebar | Shows email, role badge `VIEWER` |
+
+---
+
+#### 2. AR_CLERK — create invoices (`clerk@demo.local`)
+
+Sign out, then click the **AR Clerk** quick-login card.
+
+| Action | Expected result |
+|--------|-----------------|
+| Invoices → **+ New Invoice** | ✅ Opens create form |
+| Fill customer, line items → **Create Invoice** | ✅ New DRAFT invoice appears in list |
+| Open the new DRAFT → **Approve** | ❌ Disabled (CONTROLLER only) |
+| Open **INV-000005** (APPROVED) → **Mark as Sent** | ✅ Status → SENT |
+| Open **INV-000003** (SENT) → **Record Payment** | ✅ Payment form at bottom; balance decreases |
+
+---
+
+#### 3. CONTROLLER — approve / void (`controller@demo.local`)
+
+Sign out, then click the **Controller** quick-login card.
+
+| Action | Expected result |
+|--------|-----------------|
+| Open **INV-000006** (DRAFT, $2,500) | ✅ Detail page loads |
+| Select AR account → **Approve & Post to GL** | ✅ Status → APPROVED; GL journal entries appear |
+| **Mark as Sent** on an APPROVED invoice | ✅ Status → SENT |
+| **Write Off** on a SENT invoice with balance | ✅ Status → WRITTEN_OFF |
+| **Void** on DRAFT/APPROVED/SENT | ✅ Status → VOID |
+| **Credit Memos** → create memo → **Apply** to open invoice | ✅ Memo applied; invoice balance decreases |
+| Sidebar | Role badge `CONTROLLER`; theme toggle (sun/moon) bottom-right |
+
+> **Tip:** Pre-seeded invoices cover all lifecycle states — see [SUBMISSION.md](./SUBMISSION.md) for the full table (PAID, PARTIALLY_PAID, SENT, DRAFT, VOID, WRITTEN_OFF).
+
+---
+
+#### 4. Automated checks (optional)
+
+**Unit/integration tests** (no Docker needed):
+```bash
+cd backend && npm ci && npm test
+# Expected: 63 tests pass
+```
+
+**Smoke tests** (stack must be running):
+```bash
+bash scripts/verify.sh
+# Expected: 6 passed, 0 failed
+```
+
+**API health:**
+```bash
+curl http://localhost:3001/health
+# Expected: {"status":"ok","database":"connected",...}
+```
 
 ---
 
@@ -79,10 +174,10 @@ Tests run entirely against mocked Prisma — no database needed.
 ```bash
 cd backend
 npm ci          # install dependencies
-npm test        # run 52 tests
+npm test        # run 63 tests
 ```
 
-Expected output: **52 tests pass, 0 failures** in ~10 seconds.
+Expected output: **63 tests pass, 0 failures** in ~10 seconds.
 
 Requires Node.js 20+ installed locally (only needed if you want to run tests without Docker).
 
@@ -123,7 +218,7 @@ npm run dev
 cd frontend
 npm install
 
-# Only API URL is needed — tenant is auto-detected from the /api/tenants endpoint
+# API URL only — sign in at http://localhost:3000/login after starting the backend (JWT sets tenant + role)
 echo "NEXT_PUBLIC_API_URL=http://localhost:3001" > .env.local
 
 npm run dev
@@ -133,8 +228,8 @@ npm run dev
 
 ## API Reference & Sample Requests
 
-> **Important:** All business routes require `X-Tenant-ID` header.  
-> Get your tenant ID from the seed script output.
+> **Important:** Business routes require authentication. The UI uses JWT (`Authorization: Bearer`) after login. For curl, use `X-Tenant-ID` + `X-User-Role` when `ALLOW_HEADER_AUTH=true` (default).  
+> Get your tenant ID from the seed script output or from the JWT payload after `POST /api/auth/demo-login`.
 
 Set these variables before running the examples:
 
@@ -402,7 +497,8 @@ erp-invoicing/
 │   │   │   ├── customers/       # Customer CRUD + aging report
 │   │   │   ├── gl/              # Journal entry queries + GL account management
 │   │   │   ├── reports/         # AR summary, aging, GL reconciliation
-│   │   │   └── tenants/         # Tenant management (no auth required)
+│   │   │   ├── auth/            # Demo JWT login (POST /api/auth/demo-login)
+│   │   │   └── tenants/         # Tenant list (public GET); POST requires X-Admin-Key
 │   │   └── shared/
 │   │       ├── errors.ts        # Typed error classes
 │   │       └── logger.ts        # Winston logger
