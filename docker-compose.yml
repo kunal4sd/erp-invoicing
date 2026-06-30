@@ -26,11 +26,21 @@ services:
       PORT: 3001
       NODE_ENV: production
       CORS_ORIGIN: http://localhost:3000
+      JWT_SECRET: demo-jwt-secret-for-local-docker-only
+      DEMO_USER_PASSWORD: demo
+      ALLOW_HEADER_AUTH: "true"
+      ADMIN_API_KEY: demo-admin-key
     ports:
       - "3001:3001"
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3001/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     restart: unless-stopped
 
   frontend:
@@ -43,7 +53,8 @@ services:
     ports:
       - "3000:3000"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

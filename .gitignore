@@ -6,3 +6,4 @@ dist/
 *.env
 postgres_data/
 coverage/
+*.tsbuildinfo
