@@ -1,0 +1,483 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Multi-Tenancy ────────────────────────────────────────────────────────────
+
+model Tenant {
+  id           String   @id @default(cuid())
+  name         String
+  slug         String   @unique
+  baseCurrency String   @default("USD")
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  entities          Entity[]
+  customers         Customer[]
+  invoices          Invoice[]
+  payments          Payment[]
+  creditMemos       CreditMemo[]
+  glAccounts        GLAccount[]
+  journalEntries    JournalEntry[]
+  exchangeRates     ExchangeRate[]
+  accountingPeriods AccountingPeriod[]
+  auditLogs         AuditLog[]
+  users             User[]
+  sequenceCounters  SequenceCounter[]
+}
+
+// Atomic per-tenant sequence counter — prevents duplicate INV/JE numbers under concurrency
+model SequenceCounter {
+  tenantId    String
+  counterName String
+  lastValue   Int    @default(0)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([tenantId, counterName])
+}
+
+// Subsidiary / multi-entity support
+model Entity {
+  id             String     @id @default(cuid())
+  tenantId       String
+  parentEntityId String?
+  name           String
+  code           String
+  type           EntityType @default(SUBSIDIARY)
+  currency       String     @default("USD")
+  isActive       Boolean    @default(true)
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  parent       Entity?  @relation("EntityHierarchy", fields: [parentEntityId], references: [id])
+  children     Entity[] @relation("EntityHierarchy")
+
+  customers       Customer[]
+  invoices        Invoice[]
+  payments        Payment[]
+  creditMemos     CreditMemo[]
+  glAccounts      GLAccount[]
+  journalEntries  JournalEntry[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+}
+
+enum EntityType {
+  PARENT
+  SUBSIDIARY
+  BRANCH
+}
+
+// ─── Users ────────────────────────────────────────────────────────────────────
+
+model User {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String
+  email     String
+  role      UserRole @default(AR_CLERK)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, email])
+  @@index([tenantId])
+}
+
+enum UserRole {
+  ADMIN
+  CONTROLLER
+  AR_CLERK
+  AP_CLERK
+  VIEWER
+}
+
+// ─── Chart of Accounts ───────────────────────────────────────────────────────
+
+model GLAccount {
+  id          String        @id @default(cuid())
+  tenantId    String
+  entityId    String
+  code        String
+  name        String
+  type        GLAccountType
+  subtype     String?
+  currency    String        @default("USD")
+  isActive    Boolean       @default(true)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  entity  Entity  @relation(fields: [entityId], references: [id])
+
+  arCustomers           Customer[]      @relation("CustomerARAccount")
+  invoiceLineItems      InvoiceLineItem[]
+  journalEntryLines     JournalEntryLine[]
+
+  @@unique([tenantId, entityId, code])
+  @@index([tenantId, entityId])
+}
+
+enum GLAccountType {
+  ASSET
+  LIABILITY
+  EQUITY
+  REVENUE
+  EXPENSE
+}
+
+// ─── Customers ────────────────────────────────────────────────────────────────
+
+model Customer {
+  id             String   @id @default(cuid())
+  tenantId       String
+  entityId       String
+  code           String
+  name           String
+  email          String?
+  phone          String?
+  currency       String   @default("USD")
+  creditLimit    Decimal  @default(0) @db.Decimal(18, 2)
+  paymentTerms   Int      @default(30) // days
+  arAccountId    String?
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  entity    Entity    @relation(fields: [entityId], references: [id])
+  arAccount GLAccount? @relation("CustomerARAccount", fields: [arAccountId], references: [id])
+
+  invoices    Invoice[]
+  payments    Payment[]
+  creditMemos CreditMemo[]
+
+  @@unique([tenantId, entityId, code])
+  @@index([tenantId, entityId])
+}
+
+// ─── Invoices ─────────────────────────────────────────────────────────────────
+
+model Invoice {
+  id              String        @id @default(cuid())
+  tenantId        String
+  entityId        String
+  customerId      String
+  invoiceNumber   String
+  status          InvoiceStatus @default(DRAFT)
+  issueDate       DateTime      @default(now())
+  dueDate         DateTime
+  currency        String        @default("USD")
+  exchangeRate    Decimal       @default(1) @db.Decimal(18, 6)
+  subtotal        Decimal       @db.Decimal(18, 2)
+  taxAmount       Decimal       @default(0) @db.Decimal(18, 2)
+  total           Decimal       @db.Decimal(18, 2)
+  amountPaid      Decimal       @default(0) @db.Decimal(18, 2)
+  amountDue       Decimal       @db.Decimal(18, 2)
+  notes           String?
+  idempotencyKey  String?
+  createdBy       String
+  approvedBy      String?
+  approvedAt      DateTime?
+  voidedBy        String?
+  voidedAt        DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  entity   Entity   @relation(fields: [entityId], references: [id])
+  customer Customer @relation(fields: [customerId], references: [id])
+
+  lineItems          InvoiceLineItem[]
+  paymentAllocations PaymentAllocation[]
+  creditAllocations  CreditMemoAllocation[]
+  journalEntries     JournalEntry[]
+
+  @@unique([tenantId, invoiceNumber])
+  @@unique([tenantId, idempotencyKey])
+  @@index([tenantId, entityId])
+  @@index([tenantId, customerId])
+  @@index([tenantId, status])
+}
+
+enum InvoiceStatus {
+  DRAFT
+  APPROVED
+  SENT
+  PARTIALLY_PAID
+  PAID
+  VOID
+  WRITTEN_OFF
+}
+
+model InvoiceLineItem {
+  id          String   @id @default(cuid())
+  invoiceId   String
+  description String
+  quantity    Decimal  @db.Decimal(18, 4)
+  unitPrice   Decimal  @db.Decimal(18, 4)
+  taxRate     Decimal  @default(0) @db.Decimal(5, 4)
+  amount      Decimal  @db.Decimal(18, 2)
+  glAccountId String?
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  invoice   Invoice    @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  glAccount GLAccount? @relation(fields: [glAccountId], references: [id])
+}
+
+// ─── Payments ─────────────────────────────────────────────────────────────────
+
+model Payment {
+  id              String        @id @default(cuid())
+  tenantId        String
+  entityId        String
+  customerId      String
+  amount          Decimal       @db.Decimal(18, 2)
+  currency        String        @default("USD")
+  exchangeRate    Decimal       @default(1) @db.Decimal(18, 6)
+  paymentDate     DateTime      @default(now())
+  method          PaymentMethod @default(BANK_TRANSFER)
+  referenceNumber String?
+  status          PaymentStatus @default(PENDING)
+  unappliedAmount Decimal       @db.Decimal(18, 2)
+  idempotencyKey  String?
+  createdBy       String
+  notes           String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  entity   Entity   @relation(fields: [entityId], references: [id])
+  customer Customer @relation(fields: [customerId], references: [id])
+
+  allocations PaymentAllocation[]
+
+  @@unique([tenantId, idempotencyKey])
+  @@index([tenantId, entityId])
+  @@index([tenantId, customerId])
+}
+
+enum PaymentMethod {
+  CASH
+  CHECK
+  BANK_TRANSFER
+  CREDIT_CARD
+  ACH
+  WIRE
+}
+
+enum PaymentStatus {
+  PENDING
+  APPLIED
+  PARTIALLY_APPLIED
+  UNAPPLIED
+  VOIDED
+}
+
+model PaymentAllocation {
+  id          String   @id @default(cuid())
+  paymentId   String
+  invoiceId   String
+  amount      Decimal  @db.Decimal(18, 2)
+  appliedAt   DateTime @default(now())
+  appliedBy   String
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  invoice Invoice @relation(fields: [invoiceId], references: [id])
+
+  @@unique([paymentId, invoiceId])
+}
+
+// ─── Credit Memos ─────────────────────────────────────────────────────────────
+
+model CreditMemo {
+  id                String           @id @default(cuid())
+  tenantId          String
+  entityId          String
+  customerId        String
+  creditMemoNumber  String
+  originalInvoiceId String?
+  amount            Decimal          @db.Decimal(18, 2)
+  appliedAmount     Decimal          @default(0) @db.Decimal(18, 2)
+  remainingAmount   Decimal          @db.Decimal(18, 2)
+  currency          String           @default("USD")
+  reason            String
+  status            CreditMemoStatus @default(DRAFT)
+  createdBy         String
+  approvedBy        String?
+  approvedAt        DateTime?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  entity   Entity   @relation(fields: [entityId], references: [id])
+  customer Customer @relation(fields: [customerId], references: [id])
+
+  allocations CreditMemoAllocation[]
+
+  @@unique([tenantId, creditMemoNumber])
+  @@index([tenantId, customerId])
+}
+
+enum CreditMemoStatus {
+  DRAFT
+  APPROVED
+  PARTIALLY_APPLIED
+  APPLIED
+  VOID
+}
+
+model CreditMemoAllocation {
+  id           String   @id @default(cuid())
+  creditMemoId String
+  invoiceId    String
+  amount       Decimal  @db.Decimal(18, 2)
+  appliedAt    DateTime @default(now())
+  appliedBy    String
+
+  creditMemo CreditMemo @relation(fields: [creditMemoId], references: [id], onDelete: Cascade)
+  invoice    Invoice    @relation(fields: [invoiceId], references: [id])
+
+  @@unique([creditMemoId, invoiceId])
+}
+
+// ─── General Ledger ───────────────────────────────────────────────────────────
+
+model JournalEntry {
+  id            String             @id @default(cuid())
+  tenantId      String
+  entityId      String
+  entryNumber   String
+  referenceType JournalRefType
+  referenceId   String
+  invoiceId     String?
+  postingDate   DateTime
+  period        Int
+  fiscalYear    Int
+  status        JournalEntryStatus @default(POSTED)
+  description   String
+  totalDebit    Decimal            @db.Decimal(18, 2)
+  totalCredit   Decimal            @db.Decimal(18, 2)
+  reversalOf    String?
+  createdBy     String
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  tenant  Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  entity  Entity   @relation(fields: [entityId], references: [id])
+  invoice Invoice? @relation(fields: [invoiceId], references: [id])
+
+  lines JournalEntryLine[]
+
+  @@unique([tenantId, entryNumber])
+  @@index([tenantId, entityId])
+  @@index([tenantId, referenceId])
+  @@index([invoiceId])
+}
+
+enum JournalRefType {
+  INVOICE
+  PAYMENT
+  CREDIT_MEMO
+  WRITE_OFF
+  ADJUSTMENT
+  REVERSAL
+}
+
+enum JournalEntryStatus {
+  DRAFT
+  POSTED
+  REVERSED
+}
+
+model JournalEntryLine {
+  id             String   @id @default(cuid())
+  journalEntryId String
+  glAccountId    String
+  debit          Decimal  @default(0) @db.Decimal(18, 2)
+  credit         Decimal  @default(0) @db.Decimal(18, 2)
+  description    String?
+  sortOrder      Int      @default(0)
+
+  journalEntry JournalEntry @relation(fields: [journalEntryId], references: [id], onDelete: Cascade)
+  glAccount    GLAccount    @relation(fields: [glAccountId], references: [id])
+}
+
+// ─── Exchange Rates ───────────────────────────────────────────────────────────
+
+model ExchangeRate {
+  id            String   @id @default(cuid())
+  tenantId      String
+  fromCurrency  String
+  toCurrency    String
+  rate          Decimal  @db.Decimal(18, 6)
+  effectiveDate DateTime
+  source        String?
+  createdAt     DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, fromCurrency, toCurrency, effectiveDate])
+  @@index([tenantId, fromCurrency, toCurrency])
+}
+
+// ─── Accounting Periods ───────────────────────────────────────────────────────
+
+model AccountingPeriod {
+  id         String       @id @default(cuid())
+  tenantId   String
+  fiscalYear Int
+  period     Int          // 1-12 for monthly
+  startDate  DateTime
+  endDate    DateTime
+  status     PeriodStatus @default(OPEN)
+  closedBy   String?
+  closedAt   DateTime?
+  createdAt  DateTime     @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, fiscalYear, period])
+  @@index([tenantId])
+}
+
+enum PeriodStatus {
+  OPEN
+  CLOSED
+  LOCKED
+}
+
+// ─── Audit Log ────────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  tenantId   String
+  entityType String
+  entityId   String
+  action     String
+  userId     String
+  userName   String
+  oldValues  Json?
+  newValues  Json?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, entityType, entityId])
+  @@index([tenantId, createdAt])
+}
